@@ -188,3 +188,48 @@ def get_my_consultation_history(counselor_id):
     rows = cursor.fetchall()
     conn.close()
     return rows
+# ... (위의 기존 코드들은 그대로 둠) ...
+
+# === [추가] DB 자동 초기화 함수 ===
+def check_and_init_db():
+    """앱 실행 시 DB와 테이블이 없으면 자동으로 생성하는 함수"""
+    conn = sqlite3.connect('saju.db')
+    cursor = conn.cursor()
+    
+    # 1. users 테이블이 있는지 확인
+    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='users'")
+    if cursor.fetchone()[0] == 0:
+        # 테이블이 없으면 생성
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT NOT NULL,
+            name TEXT
+        )
+        ''')
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS consultations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            counselor_id TEXT,
+            client_name TEXT,
+            client_gender TEXT,
+            birth_date TEXT,
+            birth_time TEXT,
+            consult_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            memo TEXT,
+            FOREIGN KEY (counselor_id) REFERENCES users (username)
+        )
+        ''')
+        # 초기 상담원 데이터(test1~5) 넣기
+        users = [
+            ('test1', '1234', '상담원1'),
+            ('test2', '1234', '상담원2'),
+            ('test3', '1234', '상담원3'),
+            ('test4', '1234', '상담원4'),
+            ('test5', '1234', '상담원5')
+        ]
+        cursor.executemany('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', users)
+        conn.commit()
+        print("DB 및 기본 계정(test1~5) 자동 생성 완료")
+        
+    conn.close()
