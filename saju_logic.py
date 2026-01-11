@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 
-# 60갑자 리스트
+# 60갑자 리스트 (검증용 필수 데이터)
 GANJI_60 = [
     '甲子', '乙丑', '丙寅', '丁卯', '戊辰', '己巳', '庚午', '辛未', '壬申', '癸酉',
     '甲戌', '乙亥', '丙子', '丁丑', '戊寅', '己卯', '庚辰', '辛巳', '壬午', '癸未',
@@ -13,31 +13,69 @@ GANJI_60 = [
 
 BRANCHES = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
 
-# === 1. DB 조회 (여기가 핵심 수정됨) ===
+# === 1. DB 조회 및 정밀 검증 (여기가 핵심) ===
 def get_db_data(year, month, day, is_lunar=False):
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
     
+    # 결과 담을 변수
+    final_result = None
+    
     if is_lunar:
-        # [수정] 음력 선택 시: 무조건 cd_ly(음력년), cd_lm(음력월), cd_ld(음력일)로만 검색
-        # 양력(cd_sy)은 절대 보지 않음.
+        # [핵심 로직]
+        # 음력 1973년 11월은 양력으로 1974년 1월일 수 있음.
+        # 따라서 입력받은 year(1973)와 year+1(1974) 두 해를 모두 뒤져야 함.
+        # cd_ly 컬럼이 없어도 작동하도록 cd_sy(양력) 기준으로 2년치를 검색.
         query = f"""
-        SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee 
+        SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee, cd_sy, cd_sm, cd_sd
         FROM calenda_data 
-        WHERE cd_ly={year} AND cd_lm={month} AND cd_ld={day}
+        WHERE (cd_sy={year} OR cd_sy={year+1}) 
+          AND cd_lm={month} 
+          AND cd_ld={day}
         """
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        if not rows:
+            conn.close()
+            return None
+            
+        # 검색된 후보들 중에서 "진짜 입력한 연도(1973)"에 맞는 놈을 찾아야 함.
+        # 방법: 입력한 연도(1973)에 해당하는 간지(계축)가 맞는지 확인.
+        # 1973년의 간지 인덱스 = (1973 - 4) % 60 = 49 (癸丑 - 계축)
+        target_ganji = GANJI_60[(year - 4) % 60]
+        
+        found_match = False
+        for row in rows:
+            # DB에 저장된 년주(cd_hyganjee)와 우리가 찾는 년주(target_ganji)가 같은지 비교
+            # 주의: 한자 텍스트가 정확히 일치해야 함.
+            if row[2] == target_ganji:
+                final_result = row
+                found_match = True
+                break
+        
+        # 만약 정확한 간지 일치자가 없으면? (입춘 전후 문제 등)
+        # 우선순위: 양력 연도가 입력 연도와 가까운 것보다는, 
+        # 음력은 보통 양력보다 뒤로 밀리므로, 만약 11월, 12월이면 year+1 쪽이 맞을 확률이 높음.
+        if not found_match:
+            # 1순위: 그냥 첫번째꺼라도 가져온다 (데이터 없는것보단 나음)
+            final_result = rows[0]
+            # 보정: 만약 후보가 2개고, 우리가 찾는게 하반기(10월~12월)라면 뒤에꺼(year+1) 선택
+            if len(rows) > 1 and month >= 10:
+                final_result = rows[1]
+
     else:
-        # [수정] 양력 선택 시: cd_sy, cd_sm, cd_sd로 검색
+        # 양력은 심플하게 검색 (기존 유지)
         query = f"""
-        SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee 
+        SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee, cd_sy, cd_sm, cd_sd
         FROM calenda_data 
         WHERE cd_sy={year} AND cd_sm={month} AND cd_sd={day}
         """
+        cursor.execute(query)
+        final_result = cursor.fetchone()
         
-    cursor.execute(query)
-    result = cursor.fetchone()
     conn.close()
-    return result
+    return final_result
 
 # === 2. 시주 계산 ===
 def calculate_time_pillar(day_stem, hour):
@@ -45,7 +83,12 @@ def calculate_time_pillar(day_stem, hour):
     if time_idx >= 12: time_idx = 0 
     time_branch = BRANCHES[time_idx] 
     stems = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸']
-    if day_stem not in stems: return "??", 0
+    
+    # 예외처리: DB에 천간 글자가 이상하게 박혀있을 경우 대비
+    if day_stem not in stems: 
+        # 만약 day_stem이 안 잡히면 기본값 처리하거나 에러 방지
+        return "??", time_idx
+        
     day_idx = stems.index(day_stem)
     start_stem_idx = (day_idx % 5) * 2
     time_stem_idx = (start_stem_idx + time_idx) % 10
@@ -54,11 +97,17 @@ def calculate_time_pillar(day_stem, hour):
 
 # === 3. 자미두수 계산 ===
 def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
+    # 명궁 계산
     myung_idx = (2 + (lunar_month - 1) - time_idx) % 12
     myung_gung = BRANCHES[myung_idx]
     
+    # 국수 계산
     stems = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸']
-    y_idx = stems.index(year_stem)
+    try:
+        y_idx = stems.index(year_stem)
+    except:
+        y_idx = 0 # 에러 방지용 기본값
+        
     start = (y_idx % 5) * 2 + 2 
     off = myung_idx - 2
     if off < 0: off += 12
@@ -70,6 +119,7 @@ def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
     
     ziwei_idx = (lunar_day + guk) % 12 
     
+    # 별 배치
     stars = {}
     stars['자미'] = ziwei_idx
     stars['천부'] = (2 + 8 - ziwei_idx) % 12
@@ -130,18 +180,28 @@ def calculate_daewoon(gender, year_pillar, month_pillar):
 # === 5. 메인 분석 함수 ===
 def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
     db_data = get_db_data(year, month, day, is_lunar)
+    
     if not db_data: 
-        return {"error": f"데이터 없음: {year}년 {month}월 {day}일 ({'음력' if is_lunar else '양력'}) 데이터가 DB에 없습니다."}
+        return {"error": f"데이터 없음: {year}년 {month}월 {day}일 데이터를 찾을 수 없습니다."}
     
     try:
         lunar_month = int(db_data[0]) 
         lunar_day = int(db_data[1])
-    except: return {"error": "날짜 형변환 오류"}
+        # [수정] DB 조회 결과 인덱스가 쿼리 변경으로 밀릴 수 있으므로 정확히 매핑
+        # query: cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee, ...
+        year_p = db_data[2]
+        month_p = db_data[3]
+        day_p = db_data[4]
+    except Exception as e: 
+        return {"error": f"데이터 처리 오류: {e}"}
         
-    year_p, month_p, day_p = db_data[2], db_data[3], db_data[4]
+    # 시주 계산
     time_p, time_idx = calculate_time_pillar(day_p[0], hour)
     
+    # 자미두수
     myung_loc, myung_star = get_jami_data(lunar_month, time_idx, year_p[0], lunar_day)
+    
+    # 대운
     daewoon = calculate_daewoon(gender, year_p, month_p)
     
     return {
