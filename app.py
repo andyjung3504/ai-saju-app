@@ -25,13 +25,17 @@ if 'run_analysis' not in st.session_state: st.session_state['run_analysis'] = Fa
 if 'analysis_mode' not in st.session_state: st.session_state['analysis_mode'] = "lifetime"
 
 # ==============================================================================
-# [기능 1] 2026년 길일/흉일 DB 정밀 추적 (DB 전수조사)
+# [수정 완료] 기능 1: 2026년 길일/흉일 정밀 산출 (합,충,형,해,공망,귀인 전체 고려)
 # ==============================================================================
 def find_best_worst_days_2026(user_day_stem, user_day_branch):
     """
-    내담자의 일간/일지를 기준으로 2026년 DB 데이터를 샅샅이 뒤져
-    천을귀인(길일)과 충(흉일) 날짜를 찾아낸다.
+    내담자의 일주(Day Pillar)를 기준으로 2026년 365일을 전수 조사하여
+    길일(천을귀인, 육합)과 흉일(충, 형, 해, 공망)을 월별로 안배하여 추출한다.
     """
+    # 1. 기초 매핑 데이터
+    branches = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
+    
+    # 천을귀인 (길신)
     nobleman_map = {
         '甲': ['丑', '未'], '戊': ['丑', '未'], '庚': ['丑', '未'],
         '乙': ['子', '申'], '己': ['子', '申'],
@@ -39,35 +43,108 @@ def find_best_worst_days_2026(user_day_stem, user_day_branch):
         '壬': ['巳', '卯'], '癸': ['巳', '卯'],
         '辛': ['午', '寅']
     }
-    branches = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
     
-    my_branch_idx = branches.index(user_day_branch)
-    chung_branch = branches[(my_branch_idx + 6) % 12] # 충
-    
-    target_good = nobleman_map.get(user_day_stem, [])
-    target_bad = chung_branch
+    # 지지 육합 (길신)
+    yuk_hap_map = {
+        '子': '丑', '丑': '子', '寅': '亥', '亥': '寅',
+        '卯': '戌', '戌': '卯', '辰': '酉', '酉': '辰',
+        '巳': '申', '申': '巳', '午': '未', '未': '午'
+    }
 
+    # 칠충 (흉신) - 반대편 글자
+    my_branch_idx = branches.index(user_day_branch)
+    chung_branch = branches[(my_branch_idx + 6) % 12]
+    
+    # 지지 육해 (흉신)
+    yuk_hai_map = {
+        '子': '未', '丑': '午', '寅': '巳', '巳': '寅',
+        '卯': '辰', '辰': '卯', '申': '亥', '亥': '申',
+        '酉': '戌', '戌': '酉', '午': '丑', '未': '子'
+    }
+
+    # 삼형살 (흉신) - 약식 (주요 형살만 체크)
+    xing_map = {
+        '寅': ['巳', '申'], '巳': ['寅', '申'], '申': ['寅', '巳'],
+        '丑': ['戌', '未'], '戌': ['丑', '未'], '未': ['丑', '戌'],
+        '子': ['卯'], '卯': ['子'],
+        '辰': ['辰'], '午': ['午'], '酉': ['酉'], '亥': ['亥'] # 자형
+    }
+
+    # 공망 (흉신) 계산
+    stems = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸']
+    stem_idx = stems.index(user_day_stem)
+    branch_idx = branches.index(user_day_branch)
+    # (지지번호 - 천간번호)로 순공(旬空) 찾기
+    diff = (branch_idx - stem_idx)
+    if diff < 0: diff += 12
+    # 순중공망: (diff)값에 따라 공망 글자가 정해짐
+    gongmang_table = {
+        10: ['戌', '亥'], 8: ['申', '酉'], 6: ['午', '未'],
+        4: ['辰', '巳'], 2: ['寅', '卯'], 0: ['子', '丑']
+    }
+    my_gongmang = gongmang_table.get(diff, [])
+
+    # 2. 2026년 전수 조사
     found_good = []
     found_bad = []
     
     start_date = datetime(2026, 1, 1)
-    for i in range(0, 365, 2): 
+    # 365일 전체 루프 (중단 없음)
+    for i in range(365): 
         curr = start_date + timedelta(days=i)
-        row = get_db_data(curr.year, curr.month, curr.day, False) # 양력 조회
+        # DB에서 일진(Day Ganji) 가져오기 (양력)
+        row = get_db_data(curr.year, curr.month, curr.day, False)
+        
         if row:
-            day_ganji = row[4] 
-            day_branch = day_ganji[1]
-            date_str = curr.strftime("%Y년 %m월 %d일")
+            day_ganji = row[4] # 예: 甲子
+            day_branch = day_ganji[1] # 지지
+            date_str = curr.strftime("%m월 %d일")
             
-            if len(found_good) < 3 and day_branch in target_good:
-                found_good.append(f"{date_str}({day_ganji}, 천을귀인)")
+            # --- 길일 판별 ---
+            is_good = False
+            reasons_good = []
             
-            if len(found_bad) < 3 and day_branch == target_bad:
-                found_bad.append(f"{date_str}({day_ganji}, {user_day_branch}충)")
+            # 1) 천을귀인
+            if day_branch in nobleman_map.get(user_day_stem, []):
+                reasons_good.append("천을귀인")
+            # 2) 육합
+            if yuk_hap_map.get(user_day_branch) == day_branch:
+                reasons_good.append("육합(도움)")
                 
-        if len(found_good) >= 3 and len(found_bad) >= 3: break
+            if reasons_good:
+                found_good.append(f"{date_str}({day_ganji}: {','.join(reasons_good)})")
+
+            # --- 흉일 판별 ---
+            is_bad = False
+            reasons_bad = []
             
-    return found_good, found_bad
+            # 1) 충
+            if day_branch == chung_branch:
+                reasons_bad.append("충(충돌)")
+            # 2) 공망
+            if day_branch in my_gongmang:
+                reasons_bad.append("공망(빈손)")
+            # 3) 해
+            if yuk_hai_map.get(user_day_branch) == day_branch:
+                reasons_bad.append("육해(방해)")
+            # 4) 형
+            if day_branch in xing_map.get(user_day_branch, []):
+                reasons_bad.append("형살(분쟁)")
+
+            if reasons_bad:
+                found_bad.append(f"{date_str}({day_ganji}: {','.join(reasons_bad)})")
+
+    # 3. 결과 필터링 (너무 많으면 월별로 골고루 안배하여 15개 내외만 추출)
+    def sample_dates(date_list, count=12):
+        if not date_list: return []
+        if len(date_list) <= count: return date_list
+        step = len(date_list) // count
+        return [date_list[i] for i in range(0, len(date_list), step)][:count]
+
+    final_good = sample_dates(found_good, 10)
+    final_bad = sample_dates(found_bad, 10)
+            
+    return final_good, final_bad
 
 # ==============================================================================
 # [기능 2] 질문 내 날짜 파싱 -> DB 데이터 매핑
@@ -79,7 +156,6 @@ def get_db_ganji_for_query(query_text):
     prompt = f"""
     Current Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
     Task: Extract target date from: "{query_text}"
-    - If specific date, return it. Else return current time.
     - Return JSON: {{"year": 2026, "month": 5, "day": 5, "hour": 14}}
     """
     try:
@@ -236,7 +312,7 @@ else:
             if 'lifetime_script' not in st.session_state:
                 
                 # ==========================================================
-                # [MODE 1] 평생 심층 분석 (프롬프트 복구)
+                # [MODE 1] 평생 심층 분석 (대운 검증 강화)
                 # ==========================================================
                 if st.session_state['analysis_mode'] == "lifetime":
                     now = datetime.now()
@@ -244,59 +320,49 @@ else:
                     
                     system_instruction = f"""
                     [Role Definition]
-                    당신은 '자평명리학(구조)', '궁통보감(조후)', '적천수(억부)', '맹파명리(시기)'를 통합하여 분석하는 40년 경력의 명리학 마스터입니다.
-                    단순한 운세 풀이를 넘어, 정밀한 산출과 논리적 추론을 통해 내담자의 인생 전략을 설계하십시오.
+                    당신은 '자평명리학', '궁통보감', '적천수'를 통합 분석하는 40년 경력의 명리학 마스터입니다.
+                    추상적인 위로는 배제하고, 냉철한 논리와 팩트로 분석하십시오.
 
                     [Input Data]
                     - 내담자: {name} ({gender}, 만 {current_age}세)
-                    - 사주 명식: {result['사주']} (DB 기반 정확한 데이터)
-                    - 대운 흐름: {result['대운']} (한국 나이 대운수 적용)
-                    - 올해 월별 운세 데이터: {yearly_data}
+                    - 사주 명식: {result['사주']}
+                    - 대운 흐름: {result['대운']} (숫자는 한국 나이 시작점. 예: '4(갑자)' -> 4세~13세)
+                    - 올해 데이터: {yearly_data}
 
-                    [Analysis Protocol (Step-by-Step Thinking)]
+                    [Analysis Protocol]
                     **STEP 1. 정밀 명식 분석**
-                    - 일간(본원)의 강약과 특성을 파악하고, 월지(계절)와의 관계를 통해 조후를 분석한다.
-                    - 오행의 과다, 고립, 결핍을 찾아내어 기질적 장단점을 진단한다.
-                    - 합(合), 충(沖), 형(刑), 해(害), 파(破)의 작용을 원국 내에서 분석한다.
+                    - 오행의 편중, 조후, 격국을 분석하여 내담자의 그릇(기질)을 설명.
 
-                    **STEP 2. 구조 및 물상(Imagery) 분석**
-                    - 사주를 자연의 물상(예: 겨울의 태양, 가을의 거목 등)으로 비유하여 설명한다.
-                    - 격국(사회적 활동성)을 정의하고, 이를 통해 직업적 적성을 도출한다.
+                    **STEP 2. ★ 평생 대운 정밀 검증 (Past Verification - 매우 중요)**
+                    - **지나온 과거 대운의 나이 구간(예: 14세~23세, 24세~33세)을 정확히 명시할 것.**
+                    - 과거 대운의 희기(喜忌)를 판별하여, 해당 시기에 발생했을 **구체적인 사건(학업 성취, 부모 이혼, 큰 재물 취득, 건강 악화, 관재수 등)**을 팩트 체크하듯 상세히 서술할 것.
+                    - "지나온 00대운은 ~~한 시기였으므로 ~~한 일이 있었을 것이다"라고 단언할 것. (신뢰 형성의 핵심)
 
-                    **STEP 3. 통합 용신 도출 (Synthesis)**
-                    - 억부용신(균형), 조후용신(기후), 병약용신(치료), 통관용신(소통)을 종합하여 최적의 용신(희신)과 기신(흉신)을 확정한다.
+                    **STEP 3. 미래 대운 및 세운 예측**
+                    - 현재 대운의 길흉과 향후 흐름을 예측.
 
-                    **STEP 4. 신살(神殺) 정밀 분석 (균형 잡힌 시각)**
-                    - 귀인(천을, 천덕 등)과 흉살(양인, 백호, 도화 등)의 작용력을 분석하되, 현대적 관점에서 재해석한다.
+                    **STEP 4. 마스터 솔루션**
+                    - 용신 개운법 및 인생 전략 제시.
 
-                    **STEP 5. 대운 및 세운 통변 (Prediction)**
-                    - 현재 대운의 특징과 흐름을 분석한다.
-                    - 올해(세운)와 원국/대운의 상호작용을 통해 발생 가능한 구체적 사건(재물, 승진, 이별, 건강 등)을 예측한다.
-                    - **과거 검증(필수):** 지나온 대운의 특징을 언급하며 상담 신뢰도를 높인다.
-
-                    **STEP 6. 마스터 솔루션 (Advice)**
-                    - 용신을 활용한 개운법(방위, 색상, 숫자, 습관)을 제시한다.
-                    - 구체적인 행동 강령과 전략을 제안한다.
-
-                    [Output Style - Report & Script]
-                    **1. 정밀 분석 보고서 (전문가용):**
-                       - 전문 용어는 한자를 병기하되, 논리적으로 서술할 것.
-                       - 억지스러운 악담이나 빈말은 배제하고, 냉철한 팩트와 따뜻한 솔루션의 균형 유지.
+                    [Output Format]
+                    ---
+                    ## 1. 정밀 분석 보고서 (전문가용)
+                    (명리학적 근거를 포함한 상세 분석. **특히 과거 대운 검증 파트를 별도 챕터로 상세히 작성할 것.**)
                     
-                    **2. 상담자용 실전 리딩 스크립트 (구어체 대본):**
-                       - **반드시 포함할 것.** 상담자가 내담자에게 화면을 보며 바로 읽어줄 수 있도록 "선생님, 지금 운세는..." 형태로 작성.
-                       - 과거 적중 질문 포함: "00세~00세 대운 때는 ~~한 어려움이 있었을 텐데 실제로 어떠셨습니까?"
-
-                    - 분량: 전체 A4 3장 이상의 깊이 있는 내용.
+                    ## 2. 상담자용 실전 리딩 스크립트 (구어체 대본)
+                    - "선생님, 00세부터 00세까지(00대운)는 ~~한 운이라 많이 힘드셨을 텐데, 혹시 그때 금전 문제나 이별수가 있지 않으셨습니까?"
+                    - "이 사주는 과거 흐름을 보면..."
+                    ---
                     """
 
                 # ==========================================================
-                # [MODE 2] 2026년 병오년 총운 (DB 길일/흉일 포함)
+                # [MODE 2] 2026년 병오년 총운 (합/충/형/해/공망/귀인 완벽 적용)
                 # ==========================================================
                 elif st.session_state['analysis_mode'] == "2026_fortune":
                     yearly_flow = get_yearly_detailed_flow(2026)
                     day_stem = result['사주'][2][0]
                     day_branch = result['사주'][2][1]
+                    # [수정된 함수 호출] 전수조사 후 샘플링된 리스트 반환
                     good_days, bad_days = find_best_worst_days_2026(day_stem, day_branch)
                     
                     good_days_str = ", ".join(good_days) if good_days else "특이사항 없음"
@@ -304,36 +370,37 @@ else:
 
                     system_instruction = f"""
                     [Role Definition]
-                    당신은 40년 경력의 명리학 마스터입니다. 2026년 병오년(丙午年) 운세를 DB 데이터를 기반으로 정밀 해부합니다.
+                    당신은 40년 경력의 명리학 마스터입니다. 2026년 병오년(丙午年) 운세를 정밀 분석합니다.
 
                     [Input Data]
                     - 내담자: {name} ({gender}, {current_age}세)
                     - 사주 명식: {result['사주']}
                     - 2026년 월별 흐름(DB): {yearly_flow}
-                    - **★ [시스템 추출] 2026년 최고의 날(길일):** {good_days_str}
-                    - **★ [시스템 추출] 2026년 주의할 날(흉일):** {bad_days_str}
+                    - **★ [시스템 정밀 산출] 길일(귀인/육합):** {good_days_str}
+                    - **★ [시스템 정밀 산출] 흉일(충/형/해/공망):** {bad_days_str}
 
                     [Task 1: 2026년 병오년 정밀 운세 보고서]
-                    다음 항목별로 **등급(상/중/하)**을 매기고, 월별 흐름과 결합하여 구체적 전략을 제시하시오.
+                    다음 항목별로 **등급(상/중/하)**을 매기고, 월별 흐름과 결합하여 전략을 제시하시오.
+                    특히 [시스템 정밀 산출] 날짜들을 적극 인용하여 조언하시오.
                     
-                    1. **💰 재물/금전운:** 투자 타이밍, 손실 주의보, 현금 흐름 예측.
-                    2. **🏢 사업/직장운:** 승진, 이직, 창업 적기, 관재구설 가능성.
-                    3. **❤️ 부부/연애운:** 이별수, 새로운 인연, 가정 불화 및 화합.
-                    4. **💊 건강운:** 주의해야 할 신체 부위 및 취약한 달(Month).
-                    5. **📅 월별 상세 전략:** 1월부터 12월까지, 제공된 DB 월운 데이터를 바탕으로 월별 길흉을 분석.
-                    6. **📅 길일/흉일 활용 가이드:** 위 [시스템 추출] 날짜를 구체적으로 언급하며, "이 날은 계약하세요", "이 날은 운전을 피하세요" 등 행동 지침 제시.
+                    1. **💰 재물/금전운**
+                    2. **🏢 사업/직장운**
+                    3. **❤️ 부부/연애운**
+                    4. **💊 건강운**
+                    5. **📅 월별 상세 전략 (1월~12월)**
+                    6. **📅 길일/흉일 활용 가이드 (필수 포함)**
+                       - "표시된 {good_days_str}은 귀인과 합이 드는 날이니 계약이나 중요 미팅을 잡으세요."
+                       - "표시된 {bad_days_str}은 충, 형, 공망일이니 이동을 삼가고 언행을 조심하세요."
 
-                    [Task 2: 상담자용 2026년 실전 브리핑 대본]
-                    **※ 상담자가 내담자에게 2026년 운세를 브리핑하는 구어체 대본.**
-                    - "내년 병오년은 선생님께 ~~한 해가 될 것으로 보입니다."
-                    - "특히 재물운은 ~~월이 가장 좋으니 이때를 노리시고..."
-                    - "달력에 꼭 표시해 두세요. {good_days_str} 날짜들은 귀인이 돕는 날입니다."
+                    [Task 2: 상담자용 2026년 브리핑 대본]
+                    **※ 상담자가 내담자에게 읽어줄 구어체 대본.**
+                    - "내년에는 특히 이 날짜들을 조심하셔야 합니다..."
                     
                     [Output Format]
                     ---
                     ## 1. 2026년 병오년 정밀 운세 보고서
                     (상세 내용)
-                    ## 2. 상담자용 2026년 브리핑 스크립트 (읽어주세요)
+                    ## 2. 상담자용 2026년 브리핑 스크립트
                     (대화체 대본)
                     ---
                     """
