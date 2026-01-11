@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 
-# 60갑자 리스트 (대운 계산용)
+# 60갑자 리스트
 GANJI_60 = [
     '甲子', '乙丑', '丙寅', '丁卯', '戊辰', '己巳', '庚午', '辛未', '壬申', '癸酉',
     '甲戌', '乙亥', '丙子', '丁丑', '戊寅', '己卯', '庚辰', '辛巳', '壬午', '癸未',
@@ -11,17 +11,29 @@ GANJI_60 = [
     '甲寅', '乙卯', '丙辰', '丁巳', '戊午', '己未', '庚申', '辛酉', '壬戌', '癸亥'
 ]
 
-# 12지지 (자미두수용)
 BRANCHES = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
 
-# === 1. 기초 데이터 조회 (만세력) ===
+# === 1. DB 조회 (여기가 핵심 수정됨) ===
 def get_db_data(year, month, day, is_lunar=False):
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
+    
     if is_lunar:
-        query = f"SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee FROM calenda_data WHERE cd_sy={year} AND cd_lm={month} AND cd_ld={day}"
+        # [수정] 음력 선택 시: 무조건 cd_ly(음력년), cd_lm(음력월), cd_ld(음력일)로만 검색
+        # 양력(cd_sy)은 절대 보지 않음.
+        query = f"""
+        SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee 
+        FROM calenda_data 
+        WHERE cd_ly={year} AND cd_lm={month} AND cd_ld={day}
+        """
     else:
-        query = f"SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee FROM calenda_data WHERE cd_sy={year} AND cd_sm={month} AND cd_sd={day}"
+        # [수정] 양력 선택 시: cd_sy, cd_sm, cd_sd로 검색
+        query = f"""
+        SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee 
+        FROM calenda_data 
+        WHERE cd_sy={year} AND cd_sm={month} AND cd_sd={day}
+        """
+        
     cursor.execute(query)
     result = cursor.fetchone()
     conn.close()
@@ -42,25 +54,22 @@ def calculate_time_pillar(day_stem, hour):
 
 # === 3. 자미두수 계산 ===
 def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
-    # 명궁 계산
     myung_idx = (2 + (lunar_month - 1) - time_idx) % 12
     myung_gung = BRANCHES[myung_idx]
     
-    # 국수 계산 (약식)
     stems = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸']
     y_idx = stems.index(year_stem)
-    start = (y_idx % 5) * 2 + 2
+    start = (y_idx % 5) * 2 + 2 
     off = myung_idx - 2
     if off < 0: off += 12
     m_stem = (start + off) % 10
+    
     code = (m_stem // 2 + myung_idx // 2) % 5
     guk_map = {0: 4, 1: 2, 2: 6, 3: 5, 4: 3}
     guk = guk_map[code]
     
-    # 자미성 위치
     ziwei_idx = (lunar_day + guk) % 12 
     
-    # 별 배치 (주성 찾기)
     stars = {}
     stars['자미'] = ziwei_idx
     stars['천부'] = (2 + 8 - ziwei_idx) % 12
@@ -81,7 +90,6 @@ def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
     for s, i in stars.items():
         if BRANCHES[i] == myung_gung: my_stars.append(s)
     
-    # 주성이 없으면 대궁(맞은편)에서 차용한다고 표시
     if not my_stars: 
         opposite_idx = (myung_idx + 6) % 12
         op_stars = []
@@ -101,7 +109,6 @@ def calculate_daewoon(gender, year_pillar, month_pillar):
     is_year_yang = year_stem in yang_stems
     is_man = (gender == '남성')
     
-    # 순행/역행 결정
     if (is_man and is_year_yang) or (not is_man and not is_year_yang):
         direction = 1 
     else:
@@ -123,7 +130,8 @@ def calculate_daewoon(gender, year_pillar, month_pillar):
 # === 5. 메인 분석 함수 ===
 def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
     db_data = get_db_data(year, month, day, is_lunar)
-    if not db_data: return {"error": "DB 날짜 없음 (만세력 데이터 부족)"}
+    if not db_data: 
+        return {"error": f"데이터 없음: {year}년 {month}월 {day}일 ({'음력' if is_lunar else '양력'}) 데이터가 DB에 없습니다."}
     
     try:
         lunar_month = int(db_data[0]) 
@@ -147,93 +155,41 @@ def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
         }
     }
 
-# =========================================================
-# ★★★ [추가된 부분] 시스템 관리 (로그인, 저장, DB생성) ★★★
-# =========================================================
-
+# === 6. 시스템 관리 (로그인, 저장, DB생성) ===
 def check_and_init_db():
-    """앱 실행 시 DB와 테이블이 없으면 자동으로 생성하는 함수"""
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
-    
-    # users 테이블 확인 및 생성
     cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='users'")
     if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password TEXT NOT NULL,
-            name TEXT
-        )
-        ''')
-        # consultations 테이블 생성
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS consultations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            counselor_id TEXT,
-            client_name TEXT,
-            client_gender TEXT,
-            birth_date TEXT,
-            birth_time TEXT,
-            consult_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            memo TEXT,
-            FOREIGN KEY (counselor_id) REFERENCES users (username)
-        )
-        ''')
-        # 기본 계정 5개 생성 (test1 ~ test5 / 1234)
-        users = [
-            ('test1', '1234', '상담원1'),
-            ('test2', '1234', '상담원2'),
-            ('test3', '1234', '상담원3'),
-            ('test4', '1234', '상담원4'),
-            ('test5', '1234', '상담원5')
-        ]
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL, name TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS consultations (id INTEGER PRIMARY KEY AUTOINCREMENT, counselor_id TEXT, client_name TEXT, client_gender TEXT, birth_date TEXT, birth_time TEXT, consult_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, memo TEXT, FOREIGN KEY (counselor_id) REFERENCES users (username))''')
+        users = [('test1', '1234', '상담원1'), ('test2', '1234', '상담원2'), ('test3', '1234', '상담원3'), ('test4', '1234', '상담원4'), ('test5', '1234', '상담원5')]
         cursor.executemany('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', users)
         conn.commit()
-        print(">> 시스템 알림: DB 테이블 및 기본 계정(test1~5)이 자동 생성되었습니다.")
-        
     conn.close()
 
 def login_user(username, password):
-    """로그인 검증"""
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM users WHERE username=? AND password=?", (username, password))
     result = cursor.fetchone()
     conn.close()
-    if result:
-        return result[0]
-    else:
-        return None
+    return result[0] if result else None
 
 def save_consultation(counselor_id, client_name, gender, b_date, b_time, memo=""):
-    """상담 기록 저장"""
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
     try:
-        cursor.execute("""
-        INSERT INTO consultations (counselor_id, client_name, client_gender, birth_date, birth_time, memo)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (counselor_id, client_name, gender, str(b_date), str(b_time), memo))
+        cursor.execute("INSERT INTO consultations (counselor_id, client_name, client_gender, birth_date, birth_time, memo) VALUES (?, ?, ?, ?, ?, ?)", (counselor_id, client_name, gender, str(b_date), str(b_time), memo))
         conn.commit()
         return True
-    except Exception as e:
-        print(f"저장 오류: {e}")
-        return False
-    finally:
-        conn.close()
+    except: return False
+    finally: conn.close()
 
 def get_my_consultation_history(counselor_id):
-    """상담 이력 조회"""
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
-    cursor.execute("""
-    SELECT client_name, client_gender, birth_date, consult_date 
-    FROM consultations 
-    WHERE counselor_id=? 
-    ORDER BY consult_date DESC
-    LIMIT 10
-    """, (counselor_id,))
+    cursor.execute("SELECT client_name, client_gender, birth_date, consult_date FROM consultations WHERE counselor_id=? ORDER BY consult_date DESC LIMIT 10", (counselor_id,))
     rows = cursor.fetchall()
     conn.close()
     return rows
