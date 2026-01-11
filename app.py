@@ -1,9 +1,9 @@
-import pytz
 import streamlit as st
 import pandas as pd
 import requests
 import json
 import time
+import pytz  # [수정] 한국 시간 처리를 위해 필수
 from datetime import datetime, timedelta
 # saju_logic 모듈 함수 로드
 from saju_logic import analyze_user, login_user, save_consultation, get_monthly_ganji, get_db_data, check_and_init_db
@@ -26,7 +26,7 @@ if 'run_analysis' not in st.session_state: st.session_state['run_analysis'] = Fa
 if 'analysis_mode' not in st.session_state: st.session_state['analysis_mode'] = "lifetime"
 
 # ==============================================================================
-# [기능 1] 2026년 길일/흉일 정밀 산출 (합,충,형,해,공망,귀인 전체 고려) - 유지
+# [기능 1] 2026년 길일/흉일 정밀 산출 - 유지
 # ==============================================================================
 def find_best_worst_days_2026(user_day_stem, user_day_branch):
     branches = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
@@ -87,32 +87,50 @@ def find_best_worst_days_2026(user_day_stem, user_day_branch):
     return final_good, final_bad
 
 # ==============================================================================
-# [기능 2] 질문 내 날짜 파싱 -> DB 데이터 매핑 - 유지
+# [기능 2] 질문 내 날짜 파싱 -> DB 데이터 매핑 ([수정] 한국 시간 적용 + DB 강제 조회)
 # ==============================================================================
 def get_db_ganji_for_query(query_text):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
-    headers = {'Content-Type': 'application/json'}
-# 한국 시간(KST)으로 강제 고정
+    # [수정] 한국 시간(KST) 설정
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.now(kst)
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    
+    # 프롬프트: '내일'을 한국 시간 기준으로 계산하도록 지시
     prompt = f"""
-    Current Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
-    Task: Extract target date from: "{query_text}"
-    - Return JSON: {{"year": 2026, "month": 5, "day": 5, "hour": 14}}
+    Current KST Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
+    Task: Extract the TARGET date for the horoscope from: "{query_text}"
+    - If specific date mentioned, use it.
+    - If 'tomorrow' mentioned, calculate based on Current KST Time.
+    - Return JSON ONLY: {{"year": 2025, "month": 11, "day": 25}}
     """
+    
     try:
         r = requests.post(url, headers=headers, json={"contents": [{"parts": [{"text": prompt}]}]})
-        res_json = json.loads(r.json()['candidates'][0]['content']['parts'][0]['text'].replace("```json", "").replace("```", "").strip())
-        t_y, t_m, t_d, t_h = res_json['year'], res_json['month'], res_json['day'], res_json.get('hour', 12)
+        content = r.json()['candidates'][0]['content']['parts'][0]['text']
+        res_json = json.loads(content.replace("```json", "").replace("```", "").strip())
         
-# analyze_user(계산) 대신 get_db_data(DB조회) 사용
+        t_y = int(res_json['year'])
+        t_m = int(res_json['month'])
+        t_d = int(res_json['day'])
+        
+        # [수정] analyze_user(계산) 대신 get_db_data(DB조회) 사용
         row = get_db_data(t_y, t_m, t_d, False)
+        
         if row:
-            # row[4]가 일주(Day Ganji)라고 가정 (64번 줄 참조)
-            return f"[시스템 DB 데이터] 기준일: {t_y}년{t_m}월{t_d}일, DB일진: {row[4]}"
+            # row[4]가 일주(간지)라고 가정
+            return f"""
+            [★ 시스템 확실한 DB 데이터]
+            - 날짜: {t_y}년 {t_m}월 {t_d}일
+            - 일진(일주): {row[4]}
+            - (이 데이터가 없으면 'DB 데이터 없음'이라고 말할 것)
+            """
         else:
-            return f"[시스템 DB 데이터] {t_y}년 {t_m}월 {t_d}일 데이터가 DB에 없습니다."
-    except: return f"[시스템] 날짜 인식 실패, 현재 시간 기준."
+            return f"[시스템 DB 데이터] {t_y}년 {t_m}월 {t_d}일 데이터가 saju.db 파일에 존재하지 않습니다."
+            
+    except Exception as e:
+        return f"[시스템 에러] 날짜 파싱 또는 DB 연결 실패: {str(e)}"
 
 # ==============================================================================
 # [기능 3] 타인 사주(궁합) 조회 - 유지
@@ -253,7 +271,7 @@ else:
 
             if 'lifetime_script' not in st.session_state:
                 
-                # [MODE 1] 평생 심층 분석 (프롬프트 유지)
+                # [MODE 1] 평생 심층 분석
                 if st.session_state['analysis_mode'] == "lifetime":
                     now = datetime.now()
                     yearly_data = get_yearly_detailed_flow(now.year)
@@ -292,7 +310,7 @@ else:
                     ---
                     """
 
-                # [MODE 2] 2026년 병오년 총운 (프롬프트 유지)
+                # [MODE 2] 2026년 병오년 총운
                 elif st.session_state['analysis_mode'] == "2026_fortune":
                     yearly_flow = get_yearly_detailed_flow(2026)
                     day_stem = result['사주'][2][0]
@@ -374,14 +392,12 @@ else:
                     
                     chat_ctx += f"\n[현재 질문] {prompt}\n"
                     
-                    # ★★★ [여기가 수정된 핵심] ★★★
-                    # 앵무새 방지 및 질문 응답 강제 지침
+                    # 앵무새 방지 및 DB 준수 강제 지침
                     chat_ctx += """
                     [지침]
-                    1. 반드시 위에서 제공된 '[DB 만세력 데이터]'를 기준으로 답변하시오.
-                    2. **[매우 중요] 사용자가 질문을 던지면, 절대 보고서나 스크립트를 다시 읊지 말고, '그 질문'에 대해서만 핵심적으로 답변하시오.**
-                    3. 예: "5월에 이사가도 돼?" -> "네, 5월은 ~~한 기운이라 이사에 좋습니다." (O)
-                       "전체 운세 다시 말해줘" -> (X)
+                    1. 반드시 위에서 제공된 '[★ 시스템 확실한 DB 데이터]'를 기준으로 답변하시오.
+                    2. **[매우 중요] 만약 [DB 데이터]가 '데이터 없음'이거나 조회 실패일 경우, 절대로 운세를 지어내지 말고 'DB에 해당 날짜의 데이터가 없어 답변할 수 없습니다.'라고 명확히 거절하시오.**
+                    3. 사용자가 질문을 던지면, 절대 보고서나 스크립트를 다시 읊지 말고, '그 질문'에 대해서만 핵심적으로 답변하시오.
                     4. 답변은 상담자가 내담자에게 말하듯 따뜻한 '상담자 톤'으로 하시오.
                     """
                     
@@ -392,6 +408,4 @@ else:
                             st.session_state['chat_history'].append({"role": "assistant", "content": ai_msg})
                             with st.chat_message("assistant"): st.write(ai_msg)
                             st.rerun()
-                        # [오류 상세 출력] "응답 생성 실패" 대신 원인을 보여줌
-
                         except Exception as e: st.error(f"AI 응답 생성 실패: {e}")
