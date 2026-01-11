@@ -25,15 +25,20 @@ if 'run_analysis' not in st.session_state: st.session_state['run_analysis'] = Fa
 if 'analysis_mode' not in st.session_state: st.session_state['analysis_mode'] = "lifetime"
 
 # ==============================================================================
-# [기능 1] 2026년 길일/흉일 정밀 산출 (합,충,형,해,공망,귀인 전체 고려) - 유지
+# [기능 1] 2026년 길일/흉일 정밀 산출 (합,충,형,해,공망,귀인 전체 고려) - 유지됨
 # ==============================================================================
 def find_best_worst_days_2026(user_day_stem, user_day_branch):
+    """
+    내담자의 일주(Day Pillar)를 기준으로 2026년 365일을 전수 조사하여
+    길일(천을귀인, 육합)과 흉일(충, 형, 해, 공망)을 월별로 안배하여 추출한다.
+    """
     branches = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
     nobleman_map = {'甲': ['丑', '未'], '戊': ['丑', '未'], '庚': ['丑', '未'], '乙': ['子', '申'], '己': ['子', '申'], '丙': ['亥', '酉'], '丁': ['亥', '酉'], '壬': ['巳', '卯'], '癸': ['巳', '卯'], '辛': ['午', '寅']}
     yuk_hap_map = {'子': '丑', '丑': '子', '寅': '亥', '亥': '寅', '卯': '戌', '戌': '卯', '辰': '酉', '酉': '辰', '巳': '申', '申': '巳', '午': '未', '未': '午'}
     
     my_branch_idx = branches.index(user_day_branch)
     chung_branch = branches[(my_branch_idx + 6) % 12]
+    
     yuk_hai_map = {'子': '未', '丑': '午', '寅': '巳', '巳': '寅', '卯': '辰', '辰': '卯', '申': '亥', '亥': '申', '酉': '戌', '戌': '酉', '午': '丑', '未': '子'}
     xing_map = {'寅': ['巳', '申'], '巳': ['寅', '申'], '申': ['寅', '巳'], '丑': ['戌', '未'], '戌': ['丑', '未'], '未': ['丑', '戌'], '子': ['卯'], '卯': ['子'], '辰': ['辰'], '午': ['午'], '酉': ['酉'], '亥': ['亥']}
     
@@ -86,303 +91,43 @@ def find_best_worst_days_2026(user_day_stem, user_day_branch):
     return final_good, final_bad
 
 # ==============================================================================
-# [기능 2] 질문 내 날짜 파싱 -> DB 데이터 매핑 - 유지
+# [기능 2] 질문 내 날짜 파싱 -> DB 데이터 매핑 (★이부분 강력 수정됨★)
 # ==============================================================================
 def get_db_ganji_for_query(query_text):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     now = datetime.now()
+    
+    # 1. 날짜 추출
     prompt = f"""
     Current Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
     Task: Extract target date from: "{query_text}"
-    - Return JSON: {{"year": 2026, "month": 5, "day": 5, "hour": 14}}
+    - If user says "tomorrow", "Jan 12", etc., calculate exact YYYY-MM-DD.
+    - Return JSON: {{"year": 2026, "month": 1, "day": 12, "hour": 14}}
     """
     try:
         r = requests.post(url, headers=headers, json={"contents": [{"parts": [{"text": prompt}]}]})
         res_json = json.loads(r.json()['candidates'][0]['content']['parts'][0]['text'].replace("```json", "").replace("```", "").strip())
         t_y, t_m, t_d, t_h = res_json['year'], res_json['month'], res_json['day'], res_json.get('hour', 12)
         
+        # 2. DB에서 해당 날짜의 간지 직접 조회
         db_data = analyze_user(t_y, t_m, t_d, t_h, False, "남성") 
-        return f"[시스템 DB 데이터] 기준일: {t_y}년{t_m}월{t_d}일, 산출간지: {db_data.get('사주', 'DB오류')}"
-    except: return f"[시스템] 날짜 인식 실패, 현재 시간 기준."
+        
+        if "error" in db_data:
+            return f"[시스템 오류] DB에 해당 날짜({t_y}-{t_m}-{t_d}) 데이터가 없습니다."
+
+        ganji_info = db_data['사주'] # [년주, 월주, 일주, 시주]
+        
+        # 3. AI에게 먹일 강력한 프롬프트 리턴 (날짜 환각 방지)
+        return f"""
+        [★ SYSTEM FORCED DATA: DB 만세력 정답지]
+        - 질문 대상 날짜: {t_y}년 {t_m}월 {t_d}일
+        - **DB 확정 간지**: 년({ganji_info[0]}), 월({ganji_info[1]}), 일({ganji_info[2]})
+        - 경고: 네가 계산한 날짜나 간지는 모두 틀렸다. 무조건 위 'DB 확정 간지'인 '{ganji_info[2]}' 일주를 기준으로 답하라.
+        """
+    except Exception as e:
+        return f"[시스템] 날짜 파싱 실패 ({e}). 현재 시간 기준으로 분석합니다."
 
 # ==============================================================================
-# [기능 3] 타인 사주(궁합) 조회 - 유지
-# ==============================================================================
-def extract_and_analyze_target(text):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
-    headers = {'Content-Type': 'application/json'}
-    prompt = f"""
-    Task: Extract birth date from text: "{text}"
-    Return JSON: {{"found": true, "year": 1964, "month": 6, "day": 30, "lunar": true, "gender": "여성"}}
-    - Default to Lunar(true) if '음력' mentioned.
-    - If 2-digit year (e.g., 64), assume 19xx.
-    - If no date, return {{"found": false}}
-    """
-    try:
-        r = requests.post(url, headers=headers, json={"contents": [{"parts": [{"text": prompt}]}]})
-        res_json = json.loads(r.json()['candidates'][0]['content']['parts'][0]['text'].replace("```json", "").replace("```", "").strip())
-        if res_json.get("found"):
-            y, m, d = res_json['year'], res_json['month'], res_json['day']
-            is_lunar = res_json['lunar']
-            gender = res_json['gender']
-            target_res = analyze_user(y, m, d, 0, is_lunar, gender)
-            if "error" in target_res: return f"\n[시스템] 상대방 DB 조회 실패: {target_res['error']}"
-            return f"""
-            \n[★ 상대방 명식 데이터 (DB 기반)]
-            - 정보: {y}년 {m}월 {d}일 ({'음력' if is_lunar else '양력'}) / {gender}
-            - 사주: {target_res['사주']} / 대운: {target_res['대운']}
-            - 지침: 위 데이터를 바탕으로 본인(내담자)과의 궁합, 상생/상극 관계를 명리학적으로 분석하시오.
-            """
-        else: return ""
-    except: return ""
-
-def get_yearly_detailed_flow(year):
-    flow_text = f"\n[★ {year}년 월별 상세 흐름 (DB 기반)]\n"
-    try:
-        for m in range(1, 13):
-            data = get_monthly_ganji(year, m)
-            if data: flow_text += f"- {m}월: {data['month_ganji']} (세운 {data['year_ganji']}과의 관계)\n"
-        return flow_text
-    except: return ""
-
-# ==========================================
-# 메인 UI
-# ==========================================
-if not st.session_state['logged_in']:
-    st.title("🔒 명리학 마스터 로그인")
-    col1, col2, col3 = st.columns([1,1,1])
-    with col2:
-        with st.form("login_form"):
-            username = st.text_input("아이디", placeholder="test1")
-            password = st.text_input("비밀번호", type="password", placeholder="1234")
-            if st.form_submit_button("로그인", type="primary"):
-                user_name = login_user(username, password)
-                if user_name:
-                    st.session_state['logged_in'] = True
-                    st.session_state['user_id'] = username
-                    st.session_state['user_name'] = user_name
-                    st.rerun()
-                else: st.error("로그인 실패 (ID/PW 확인 또는 DB 오류)")
-
-else:
-    with st.sidebar:
-        st.info(f"🎓 마스터: {st.session_state['user_name']}")
-        if st.button("로그아웃"):
-            st.session_state['logged_in'] = False
-            st.session_state.clear()
-            st.rerun()
-        st.divider()
-
-        st.header("📝 내담자 정보")
-        name = st.text_input("성명", value="홍길동")
-        gender = st.radio("성별", ["남성", "여성"], horizontal=True)
-        calendar_type = st.radio("달력", ["양력", "음력"], horizontal=True)
-        is_lunar = (calendar_type == "음력")
-        
-        c1, c2 = st.columns(2)
-        with c1: birth_date = st.date_input("생년월일", value=pd.to_datetime("1980-01-01"), min_value=pd.to_datetime("1900-01-01"))
-        with c2: birth_time = st.time_input("태어난 시간", value=pd.to_datetime("14:30").time())
-        
-        st.divider()
-        st.markdown("### ⚡ 주제별 심층 분석")
-        
-        if st.button("📅 2026년 병오년 총운 (길일/흉일 포함)"):
-            st.session_state['run_analysis'] = True
-            st.session_state['analysis_mode'] = "2026_fortune"
-            st.session_state['chat_history'] = []
-            st.session_state.pop('lifetime_script', None)
-            st.rerun()
-
-        keywords = ["💰 재물/사업 전략", "🏠 부동산/매매 시기", "❤️ 인연/부부 궁합", "💊 건강/체질 분석", "⚖️ 관재/송사 전략", "🎓 학업/진로 적성", "✈️ 이동/변동수", "🏢 조직/리더십 분석"]
-        
-        for kw in keywords:
-            if st.button(kw):
-                st.session_state['chat_input_manual'] = kw + "에 대해 자평명리와 궁통보감의 관점에서 정밀하게 분석하고, 구체적인 인생 전략을 제시해 주십시오."
-                st.session_state['run_analysis'] = True
-                st.session_state['analysis_mode'] = "lifetime" 
-                st.session_state['chat_history'] = []
-                st.rerun()
-
-        st.markdown("---")
-        if st.button("📜 정통 평생 심층 분석 (일반)", type="primary"):
-            st.session_state['run_analysis'] = True
-            st.session_state['analysis_mode'] = "lifetime"
-            st.session_state['chat_history'] = [] 
-            st.session_state.pop('lifetime_script', None)
-            st.rerun()
-
-    st.title("📜 정통 명리학 마스터: 인생 전략 보고서")
-
-    if st.session_state['run_analysis']:
-        if not FIXED_API_KEY or len(FIXED_API_KEY) < 10:
-            st.error("API 키 오류")
-            st.stop()
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-
-        # DB 원국 산출
-        result = analyze_user(birth_date.year, birth_date.month, birth_date.day, birth_time.hour, is_lunar, gender)
-        
-        if "error" in result:
-            st.error(result["error"])
-        else:
-            current_age = datetime.now().year - birth_date.year + 1
-            
-            with st.expander("📊 정밀 명식 산출 결과", expanded=True):
-                c1, c2, c3 = st.columns([1, 2, 1])
-                with c1:
-                    st.info(f"{name} ({gender}, {current_age}세)")
-                    st.write(f"명궁: **{result['자미두수']['명궁위치']}**")
-                with c2:
-                    st.write(f"원국: {result['사주']}")
-                    st.write(f"대운: {result['대운']}")
-                with c3:
-                    if st.button("💾 상담 기록 DB 저장"):
-                        save_consultation(st.session_state['user_id'], name, gender, birth_date, birth_time, memo="분석")
-                        st.toast("저장 완료")
-
-            if 'lifetime_script' not in st.session_state:
-                
-                # [MODE 1] 평생 심층 분석 (프롬프트 유지)
-                if st.session_state['analysis_mode'] == "lifetime":
-                    now = datetime.now()
-                    yearly_data = get_yearly_detailed_flow(now.year)
-                    system_instruction = f"""
-                    [Role Definition]
-                    당신은 '자평명리학', '궁통보감', '적천수'를 통합 분석하는 40년 경력의 명리학 마스터입니다.
-                    추상적인 위로는 배제하고, 냉철한 논리와 팩트로 분석하십시오.
-
-                    [Input Data]
-                    - 내담자: {name} ({gender}, 만 {current_age}세)
-                    - 사주 명식: {result['사주']}
-                    - 대운 흐름: {result['대운']} (숫자는 한국 나이 시작점. 예: '4(갑자)' -> 4세~13세)
-                    - 올해 데이터: {yearly_data}
-
-                    [Analysis Protocol]
-                    **STEP 1. 정밀 명식 분석**
-                    - 오행의 편중, 조후, 격국을 분석하여 내담자의 그릇(기질)을 설명.
-
-                    **STEP 2. ★ 평생 대운 정밀 검증 (Past Verification)**
-                    - **지나온 과거 대운의 나이 구간을 정확히 명시할 것.**
-                    - 과거 대운의 희기(喜忌)를 판별하여, 해당 시기에 발생했을 **구체적인 사건(학업, 부모, 재물, 건강, 관재수 등)**을 팩트 체크하듯 상세히 서술할 것.
-                    - "지나온 00대운은 ~~한 시기였으므로 ~~한 일이 있었을 것이다"라고 단언할 것.
-
-                    **STEP 3. 미래 대운 및 세운 예측**
-                    - 현재 대운의 길흉과 향후 흐름을 예측.
-
-                    **STEP 4. 마스터 솔루션**
-                    - 용신 개운법 및 인생 전략 제시.
-
-                    [Output Format]
-                    ---
-                    ## 1. 정밀 분석 보고서 (전문가용)
-                    (상세 분석)
-                    ## 2. 상담자용 실전 리딩 스크립트 (구어체 대본)
-                    - "선생님, 00세부터 00세까지(00대운)는 ~~한 운이라..."
-                    ---
-                    """
-
-                # [MODE 2] 2026년 병오년 총운 (프롬프트 유지)
-                elif st.session_state['analysis_mode'] == "2026_fortune":
-                    yearly_flow = get_yearly_detailed_flow(2026)
-                    day_stem = result['사주'][2][0]
-                    day_branch = result['사주'][2][1]
-                    good_days, bad_days = find_best_worst_days_2026(day_stem, day_branch)
-                    
-                    good_days_str = ", ".join(good_days) if good_days else "특이사항 없음"
-                    bad_days_str = ", ".join(bad_days) if bad_days else "특이사항 없음"
-
-                    system_instruction = f"""
-                    [Role Definition]
-                    당신은 40년 경력의 명리학 마스터입니다. 2026년 병오년(丙午年) 운세를 정밀 분석합니다.
-
-                    [Input Data]
-                    - 내담자: {name} ({gender}, {current_age}세)
-                    - 사주 명식: {result['사주']}
-                    - 2026년 월별 흐름(DB): {yearly_flow}
-                    - **★ [시스템 정밀 산출] 길일(귀인/육합):** {good_days_str}
-                    - **★ [시스템 정밀 산출] 흉일(충/형/해/공망):** {bad_days_str}
-
-                    [Task 1: 2026년 병오년 정밀 운세 보고서]
-                    항목별 등급(상/중/하) 및 전략 제시.
-                    1. **💰 재물/금전운**
-                    2. **🏢 사업/직장운**
-                    3. **❤️ 부부/연애운**
-                    4. **💊 건강운**
-                    5. **📅 월별 상세 전략 (1월~12월)**
-                    6. **📅 길일/흉일 활용 가이드 (필수 포함)**
-                       - "표시된 {good_days_str}은 귀인과 합이 드는 날이니..."
-                       - "표시된 {bad_days_str}은 충, 형, 공망일이니..."
-
-                    [Task 2: 상담자용 2026년 브리핑 대본]
-                    - "내년에는 특히 이 날짜들을 조심하셔야 합니다..."
-                    
-                    [Output Format]
-                    ---
-                    ## 1. 2026년 병오년 정밀 운세 보고서
-                    (상세 내용)
-                    ## 2. 상담자용 2026년 브리핑 스크립트
-                    (대화체 대본)
-                    ---
-                    """
-
-                with st.spinner("마스터가 데이터를 분석하고 보고서를 작성 중입니다..."):
-                    try:
-                        r = requests.post(url, headers=headers, json={"contents": [{"parts": [{"text": system_instruction}]}]})
-                        st.session_state['lifetime_script'] = r.json()['candidates'][0]['content']['parts'][0]['text']
-                    except Exception as e: st.error(f"분석 시스템 오류: {e}")
-
-            if 'lifetime_script' in st.session_state:
-                st.markdown(st.session_state['lifetime_script'])
-                st.divider()
-                
-                st.subheader("💬 마스터와의 심층 대화")
-                for msg in st.session_state['chat_history']:
-                    with st.chat_message(msg["role"]):
-                        st.write(msg["content"])
-                
-                prompt = None
-                if st.session_state['chat_input_manual']:
-                    prompt = st.session_state['chat_input_manual']
-                    st.session_state['chat_input_manual'] = None
-                elif u_in := st.chat_input("추가 질문 (예: 26년 5월 5일에 이사해도 될까요?)"):
-                    prompt = u_in
-                
-                if prompt:
-                    st.session_state['chat_history'].append({"role": "user", "content": prompt})
-                    with st.chat_message("user"): st.write(prompt)
-                    
-                    target_info = extract_and_analyze_target(prompt)
-                    query_ganji = get_db_ganji_for_query(prompt)
-                    
-                    chat_ctx = f"{st.session_state['lifetime_script']}\n\n[이전 대화]\n"
-                    for m in st.session_state['chat_history'][:-1]:
-                        chat_ctx += f"{m['role']}: {m['content']}\n"
-                    
-                    if target_info: chat_ctx += target_info
-                    chat_ctx += f"\n{query_ganji}\n"
-                    
-                    chat_ctx += f"\n[현재 질문] {prompt}\n"
-                    
-                    # ★★★ [여기가 수정된 핵심] ★★★
-                    # 앵무새 방지 및 질문 응답 강제 지침
-                    chat_ctx += """
-                    [지침]
-                    1. 반드시 위에서 제공된 '[DB 만세력 데이터]'를 기준으로 답변하시오.
-                    2. **[매우 중요] 사용자가 질문을 던지면, 절대 보고서나 스크립트를 다시 읊지 말고, '그 질문'에 대해서만 핵심적으로 답변하시오.**
-                    3. 예: "5월에 이사가도 돼?" -> "네, 5월은 ~~한 기운이라 이사에 좋습니다." (O)
-                       "전체 운세 다시 말해줘" -> (X)
-                    4. 답변은 상담자가 내담자에게 말하듯 따뜻한 '상담자 톤'으로 하시오.
-                    """
-                    
-                    with st.spinner("답변 생성 중..."):
-                        try:
-                            r = requests.post(url, headers=headers, json={"contents": [{"parts": [{"text": chat_ctx}]}]})
-                            ai_msg = r.json()['candidates'][0]['content']['parts'][0]['text']
-                            st.session_state['chat_history'].append({"role": "assistant", "content": ai_msg})
-                            with st.chat_message("assistant"): st.write(ai_msg)
-                            st.rerun()
-                        # [오류 상세 출력] "응답 생성 실패" 대신 원인을 보여줌
-                        except Exception as e: st.error(f"AI 응답 생성 실패: {e}")
+# [기능 3] 타인 사주 조회 (유지)
+#
