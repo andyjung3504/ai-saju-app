@@ -102,8 +102,13 @@ def get_db_ganji_for_query(query_text):
         res_json = json.loads(r.json()['candidates'][0]['content']['parts'][0]['text'].replace("```json", "").replace("```", "").strip())
         t_y, t_m, t_d, t_h = res_json['year'], res_json['month'], res_json['day'], res_json.get('hour', 12)
         
-        db_data = analyze_user(t_y, t_m, t_d, t_h, False, "남성") 
-        return f"[시스템 DB 데이터] 기준일: {t_y}년{t_m}월{t_d}일, 산출간지: {db_data.get('사주', 'DB오류')}"
+# analyze_user(계산) 대신 get_db_data(DB조회) 사용
+        row = get_db_data(t_y, t_m, t_d, False)
+        if row:
+            # row[4]가 일주(Day Ganji)라고 가정 (64번 줄 참조)
+            return f"[시스템 DB 데이터] 기준일: {t_y}년{t_m}월{t_d}일, DB일진: {row[4]}"
+        else:
+            return f"[시스템 DB 데이터] {t_y}년 {t_m}월 {t_d}일 데이터가 DB에 없습니다."
     except: return f"[시스템] 날짜 인식 실패, 현재 시간 기준."
 
 # ==============================================================================
