@@ -1,3 +1,4 @@
+import pytz
 import streamlit as st
 import pandas as pd
 import requests
@@ -91,7 +92,9 @@ def find_best_worst_days_2026(user_day_stem, user_day_branch):
 def get_db_ganji_for_query(query_text):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
     headers = {'Content-Type': 'application/json'}
-    now = datetime.now()
+# 한국 시간(KST)으로 강제 고정
+    kst = pytz.timezone('Asia/Seoul')
+    now = datetime.now(kst)
     prompt = f"""
     Current Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
     Task: Extract target date from: "{query_text}"
@@ -390,4 +393,5 @@ else:
                             with st.chat_message("assistant"): st.write(ai_msg)
                             st.rerun()
                         # [오류 상세 출력] "응답 생성 실패" 대신 원인을 보여줌
+
                         except Exception as e: st.error(f"AI 응답 생성 실패: {e}")
