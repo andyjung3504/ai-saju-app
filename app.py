@@ -87,27 +87,34 @@ def find_best_worst_days_2026(user_day_stem, user_day_branch):
     return final_good, final_bad
 
 # ==============================================================================
-# [기능 2] ★★★ 강화된 날짜 파싱 → DB 데이터 매핑 (재계산 완전 차단)
+# [기능 2] ★★★ 강화된 날짜 파싱 → DB 데이터 매핑 (수정됨)
 # ==============================================================================
 def get_db_ganji_for_query(query_text):
+    """
+    사용자 질문에서 날짜를 정확히 추출하고, saju.db 데이터를 강제로 가져옵니다.
+    오늘/내일 등의 상대 날짜를 KST 기준으로 엄격하게 처리합니다.
+    """
     kst = pytz.timezone('Asia/Seoul')
     now = datetime.now(kst)
+    today_str = now.strftime('%Y년 %m월 %d일')
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={FIXED_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     
+    # 프롬프트: 현재 시간을 명확히 주입하여 상대 날짜 계산 오류 방지
     prompt = f"""
-    Current KST Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
+    Current Reference Time (KST): {now.strftime('%Y-%m-%d %H:%M:%S')} (Today is {today_str})
     
     Task: Extract the TARGET date from user query: "{query_text}"
     
-    Rules:
-    - If specific date mentioned (e.g., "2026년 5월 3일"), use it exactly
-    - If "내일" → add 1 day to Current KST Time
-    - If "모레" → add 2 days
-    - If "다음주 월요일" → calculate next Monday from Current KST Time
-    - If no clear date, return {{"found": false}}
-    
+    Rules for Date Extraction:
+    1. "오늘", "금일", "지금" -> Return {today_str} (Year: {now.year}, Month: {now.month}, Day: {now.day})
+    2. "내일" -> Add 1 day to Reference Time.
+    3. "모레" -> Add 2 days to Reference Time.
+    4. "작년", "내년" -> Calculate based on Reference Year {now.year}.
+    5. If specific date is given (e.g. "5월 5일"), assume Current Year {now.year} unless specified.
+    6. If NO date is related/mentioned, return "found": false.
+
     Return JSON ONLY (no markdown):
     {{"found": true, "year": 2026, "month": 5, "day": 3}}
     """
@@ -124,7 +131,7 @@ def get_db_ganji_for_query(query_text):
         t_m = int(res_json['month'])
         t_d = int(res_json['day'])
         
-        # ★ 핵심: DB에서 강제 조회
+        # ★ DB 조회 (양력 기준 조회)
         row = get_db_data(t_y, t_m, t_d, False)
         
         if row:
@@ -134,42 +141,36 @@ def get_db_ganji_for_query(query_text):
             
             return f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[📅 시스템 DB 확정 데이터 - 절대 진리]
+[📅 시스템 DB 확정 데이터 - 절대 기준]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-날짜: {t_y}년 {t_m}월 {t_d}일
+질문 대상 날짜: {t_y}년 {t_m}월 {t_d}일
 
 **만세력 데이터 (saju.db 조회 결과):**
-- 년주(年柱): {year_ganji}
-- 월주(月柱): {month_ganji}  
-- 일주(日柱): {day_ganji}
+- 세운(Year): {year_ganji}
+- 월운(Month): {month_ganji}  
+- 일진(Day): {day_ganji}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️  중요 지침 (AI 시스템):
-1. 위 간지는 saju.db에서 조회한 "확정된 사실"입니다
-2. 절대로 날짜로부터 간지를 재계산하지 마십시오
-3. 이 데이터만 사용하여 명리학 분석을 수행하십시오
-4. 다른 값을 사용하면 오류입니다
+⚠️  AI 답변 필독 지침:
+1. 사용자가 '음력'을 묻거나 '운세'를 물을 때 위 데이터를 절대적 팩트로 사용하십시오.
+2. 위 날짜({t_y}.{t_m}.{t_d})에 해당하는 간지는 **{day_ganji}**가 확실합니다.
+3. 다른 간지로 계산하거나 추측하면 오답입니다.
+4. "오늘 음력 며칠?" 질문 시: 위 양력 날짜에 매핑된 DB 데이터를 기반으로 답하십시오.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             """
         else:
             return f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[⛔ 시스템 경고]
+[⛔ 시스템 알림]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-{t_y}년 {t_m}월 {t_d}일의 만세력 데이터가 DB에 존재하지 않습니다.
-
-⚠️ AI 시스템 지침:
-- 이 날짜에 대한 운세 분석이 불가능합니다
-- 사용자에게 "해당 날짜의 만세력 데이터가 없어 분석할 수 없습니다"라고 답변하십시오
-- 절대로 추측하거나 계산하지 마십시오
-
+{t_y}년 {t_m}월 {t_d}일의 데이터가 DB에 없습니다.
+AI는 "해당 날짜의 만세력 데이터를 조회할 수 없습니다"라고만 답변하고 추측하지 마십시오.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             """
             
     except Exception as e:
-        return f"[시스템 오류] 날짜 파싱 실패: {str(e)}"
+        return ""
 
 # ==============================================================================
 # [기능 3] 타인 사주(궁합) 조회 - 유지
@@ -462,12 +463,7 @@ else:
 ### 📗 2) 육신 및 십이운성 배치
 
 **2-1. 사주 기둥별 육신**
-```
-년주: [간지] - [육신] - [의미]
-월주: [간지] - [육신] - [의미]
-일주: [간지] - [육신] - [의미]
-시주: [간지] - [육신] - [의미]
-```
+년주: [간지] - [육신] - [의미] 월주: [간지] - [육신] - [의미] 일주: [간지] - [육신] - [의미] 시주: [간지] - [육신] - [의미]
 
 **2-2. 십이운성 분석**
 - 년지 운성: [장생/목욕/...] → [유년기 특성]
@@ -855,6 +851,10 @@ else:
                     st.session_state['chat_history'].append({"role": "user", "content": prompt})
                     with st.chat_message("user"): st.write(prompt)
                     
+                    # [변경됨] 현재 KST 시간 주입
+                    cur_kst = datetime.now(pytz.timezone('Asia/Seoul'))
+                    cur_date_str = cur_kst.strftime("%Y년 %m월 %d일")
+
                     # ★ 핵심: 타인 사주 + 날짜 DB 조회 강화
                     target_info = extract_and_analyze_target(prompt)
                     query_ganji = get_db_ganji_for_query(prompt)
@@ -865,6 +865,12 @@ else:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {st.session_state['lifetime_script']}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[시스템 정보: 현재 시각(KST)]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+오늘 날짜: {cur_date_str}
+(사용자가 '오늘', '내일' 등을 물을 때 이 날짜가 기준입니다)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [이전 대화 기록]
@@ -907,6 +913,7 @@ else:
    - 위에 "시스템 DB 확정 데이터"가 있으면 그것만 사용
    - "DB 데이터 없음" 또는 "조회 실패"면 "해당 날짜의 데이터가 없어 분석 불가"라고만 답변
    - 절대로 추측하거나 "아마도", "대략" 같은 표현 사용 금지
+   - 사용자가 "오늘"에 대해 물으면, 위에 제공된 오늘 날짜({cur_date_str})와 [시스템 DB 확정 데이터]를 매칭해서 답하십시오.
 
 3. **답변 구조**
    - 질문에 대해서만 핵심적으로 답변 (보고서 재출력 금지)
@@ -929,7 +936,7 @@ else:
 **응답 예시:**
 
 좋은 예:
-"5월 5일을 보니 DB에서 '庚申'일로 확인됩니다. 님의 일간 甲木과는 상극 관계라서 이사는 조금 신중하게 생각하시는 게 좋겠어요. 가능하면 귀인일인 5월 12일(乙丑)로 미루시는 걸 추천드립니다."
+"오늘(5월 5일)을 DB에서 확인해보니 '庚申'일입니다. 님의 일간 甲木과는 상극 관계라서 이사는 조금 신중하게 생각하시는 게 좋겠어요. 가능하면 귀인일인 5월 12일(乙丑)로 미루시는 걸 추천드립니다."
 
 나쁜 예:
 "5월 5일은 아마도 경금 기운이 강할 것 같으니..." (← DB 무시하고 추측)
