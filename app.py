@@ -51,7 +51,6 @@ def find_best_worst_days_2026(user_day_stem, user_day_branch):
     found_bad = []
     
     start_date = datetime(2026, 1, 1)
-    # DB 부하를 줄이면서도 정확도를 위해 2일 간격 스캔 (필요시 1일로 수정 가능)
     for i in range(0, 365, 2): 
         curr = start_date + timedelta(days=i)
         row = get_db_data(curr.year, curr.month, curr.day, False) # 양력 조회
@@ -170,11 +169,7 @@ else:
         with c1: birth_date = st.date_input("생년월일", value=pd.to_datetime("1980-01-01"), min_value=pd.to_datetime("1900-01-01"))
         with c2: birth_time = st.time_input("태어난 시간", value=pd.to_datetime("14:30").time())
         
-        if st.button("🔄 정보 수정 및 리셋"):
-            st.session_state['run_analysis'] = False
-            st.session_state['chat_history'] = []
-            st.session_state.pop('lifetime_script', None)
-            st.rerun()
+        # [삭제됨] 불필요한 리셋 버튼 제거
 
         st.divider()
         st.markdown("### ⚡ 주제별 심층 분석")
@@ -197,6 +192,15 @@ else:
                 st.session_state['analysis_mode'] = "lifetime" # 일반 분석 모드
                 st.session_state['chat_history'] = []
                 st.rerun()
+
+        st.markdown("---")
+        # 일반 분석 버튼은 하단에 배치
+        if st.button("📜 정통 평생 심층 분석 (일반)", type="primary"):
+            st.session_state['run_analysis'] = True
+            st.session_state['analysis_mode'] = "lifetime"
+            st.session_state['chat_history'] = [] 
+            st.session_state.pop('lifetime_script', None)
+            st.rerun()
 
     st.title("📜 정통 명리학 마스터: 인생 전략 보고서")
 
@@ -232,7 +236,7 @@ else:
             if 'lifetime_script' not in st.session_state:
                 
                 # ==========================================================
-                # [MODE 1] 평생 심층 분석 (기존 app1.py 프롬프트 완벽 복구 + 상담 대본 추가)
+                # [MODE 1] 평생 심층 분석 (프롬프트 복구)
                 # ==========================================================
                 if st.session_state['analysis_mode'] == "lifetime":
                     now = datetime.now()
@@ -290,10 +294,7 @@ else:
                 # [MODE 2] 2026년 병오년 총운 (DB 길일/흉일 포함)
                 # ==========================================================
                 elif st.session_state['analysis_mode'] == "2026_fortune":
-                    # 1. 월별 운세 DB 가져오기
                     yearly_flow = get_yearly_detailed_flow(2026)
-                    
-                    # 2. 길일/흉일 DB 직접 추출
                     day_stem = result['사주'][2][0]
                     day_branch = result['사주'][2][1]
                     good_days, bad_days = find_best_worst_days_2026(day_stem, day_branch)
@@ -303,7 +304,7 @@ else:
 
                     system_instruction = f"""
                     [Role Definition]
-                    당신은 40년 경력의 명리학 마스터입니다. 이번 분석의 핵심은 **2026년 병오년(丙午年)**의 운세를 DB 데이터를 기반으로 정밀 해부하는 것입니다.
+                    당신은 40년 경력의 명리학 마스터입니다. 2026년 병오년(丙午年) 운세를 DB 데이터를 기반으로 정밀 해부합니다.
 
                     [Input Data]
                     - 내담자: {name} ({gender}, {current_age}세)
@@ -352,7 +353,6 @@ else:
                     with st.chat_message(msg["role"]):
                         st.write(msg["content"])
                 
-                # 수동 입력(버튼) 처리
                 prompt = None
                 if st.session_state['chat_input_manual']:
                     prompt = st.session_state['chat_input_manual']
@@ -364,13 +364,9 @@ else:
                     st.session_state['chat_history'].append({"role": "user", "content": prompt})
                     with st.chat_message("user"): st.write(prompt)
                     
-                    # 1. 타인 사주 조회 (기능 유지)
                     target_info = extract_and_analyze_target(prompt)
-                    
-                    # 2. 날짜 DB 매핑 (기능 유지)
                     query_ganji = get_db_ganji_for_query(prompt)
                     
-                    # 3. 프롬프트 구성
                     chat_ctx = f"{st.session_state['lifetime_script']}\n\n[이전 대화]\n"
                     for m in st.session_state['chat_history'][:-1]:
                         chat_ctx += f"{m['role']}: {m['content']}\n"
