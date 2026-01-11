@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 
-# 60갑자 리스트 (계산을 위해 필요)
+# 60갑자 리스트 (대운 계산용)
 GANJI_60 = [
     '甲子', '乙丑', '丙寅', '丁卯', '戊辰', '己巳', '庚午', '辛未', '壬申', '癸酉',
     '甲戌', '乙亥', '丙子', '丁丑', '戊寅', '己卯', '庚辰', '辛巳', '壬午', '癸未',
@@ -11,7 +11,10 @@ GANJI_60 = [
     '甲寅', '乙卯', '丙辰', '丁巳', '戊午', '己未', '庚申', '辛酉', '壬戌', '癸亥'
 ]
 
-# 1. DB 조회
+# 12지지 (자미두수용)
+BRANCHES = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
+
+# === 1. 기초 데이터 조회 (만세력) ===
 def get_db_data(year, month, day, is_lunar=False):
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
@@ -24,12 +27,11 @@ def get_db_data(year, month, day, is_lunar=False):
     conn.close()
     return result
 
-# 2. 시주 계산
+# === 2. 시주 계산 ===
 def calculate_time_pillar(day_stem, hour):
     time_idx = (hour + 1) // 2 
     if time_idx >= 12: time_idx = 0 
-    branches = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
-    time_branch = branches[time_idx] 
+    time_branch = BRANCHES[time_idx] 
     stems = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸']
     if day_stem not in stems: return "??", 0
     day_idx = stems.index(day_stem)
@@ -38,14 +40,13 @@ def calculate_time_pillar(day_stem, hour):
     time_stem = stems[time_stem_idx]
     return time_stem + time_branch, time_idx
 
-# 3. 자미두수 (생략 없이 포함)
-BRANCHES = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
+# === 3. 자미두수 계산 ===
 def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
-    # 명궁
+    # 명궁 계산
     myung_idx = (2 + (lunar_month - 1) - time_idx) % 12
     myung_gung = BRANCHES[myung_idx]
     
-    # 국수 (약식)
+    # 국수 계산 (약식)
     stems = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '癸']
     y_idx = stems.index(year_stem)
     start = (y_idx % 5) * 2 + 2
@@ -56,62 +57,73 @@ def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
     guk_map = {0: 4, 1: 2, 2: 6, 3: 5, 4: 3}
     guk = guk_map[code]
     
-    # 자미성
-    ziwei_idx = (lunar_day + guk) % 12 # 약식
+    # 자미성 위치
+    ziwei_idx = (lunar_day + guk) % 12 
     
-    # 별 배치 (간단히 자미 계열만)
+    # 별 배치 (주성 찾기)
     stars = {}
     stars['자미'] = ziwei_idx
     stars['천부'] = (2 + 8 - ziwei_idx) % 12
-    # 필요한 만큼 추가...
+    stars['천기'] = (ziwei_idx - 1) % 12
+    stars['태양'] = (ziwei_idx - 3) % 12
+    stars['무곡'] = (ziwei_idx - 4) % 12
+    stars['천동'] = (ziwei_idx - 5) % 12
+    stars['염정'] = (ziwei_idx - 8) % 12
+    stars['태음'] = (stars['천부'] + 1) % 12
+    stars['탐랑'] = (stars['천부'] + 2) % 12
+    stars['거문'] = (stars['천부'] + 3) % 12
+    stars['천상'] = (stars['천부'] + 4) % 12
+    stars['천량'] = (stars['천부'] + 5) % 12
+    stars['칠살'] = (stars['천부'] + 6) % 12
+    stars['파군'] = (stars['천부'] + 10) % 12
     
     my_stars = []
     for s, i in stars.items():
         if BRANCHES[i] == myung_gung: my_stars.append(s)
-    if not my_stars: my_stars.append("(명궁 주성 없음)")
     
+    # 주성이 없으면 대궁(맞은편)에서 차용한다고 표시
+    if not my_stars: 
+        opposite_idx = (myung_idx + 6) % 12
+        op_stars = []
+        for s, i in stars.items():
+            if i == opposite_idx: op_stars.append(s)
+        if op_stars:
+            return myung_gung, f"명무정요(차용): {', '.join(op_stars)}"
+        else:
+            return myung_gung, "(주성 없음)"
+            
     return myung_gung, ", ".join(my_stars)
 
-# 4. ★대운(Daewoon) 계산 로직 (New)★
+# === 4. 대운 계산 ===
 def calculate_daewoon(gender, year_pillar, month_pillar):
-    # 양남음녀: 순행, 음남양녀: 역행
-    # 양천간: 갑, 병, 무, 경, 임
     yang_stems = ['甲', '丙', '戊', '庚', '壬']
     year_stem = year_pillar[0]
-    
     is_year_yang = year_stem in yang_stems
     is_man = (gender == '남성')
     
-    # 순행 조건: (남자&양년) or (여자&음년)
+    # 순행/역행 결정
     if (is_man and is_year_yang) or (not is_man and not is_year_yang):
-        direction = 1 # 순행
+        direction = 1 
     else:
-        direction = -1 # 역행
+        direction = -1 
         
-    # 월주 인덱스 찾기
     try:
         start_idx = GANJI_60.index(month_pillar)
     except:
-        return [] # 에러시 빈칸
+        return [] 
         
-    # 대운 뽑기 (1대운 ~ 8대운 정도)
     daewoon_list = []
-    # 대운수는 절기 데이터가 없어 정확한 계산 불가하므로 
-    # 통상적인 10년 단위 흐름만 제공 (AI가 나이는 추정하게 둠 or 10세 단위 가정)
-    
-    for i in range(1, 9): # 8개 대운
+    for i in range(1, 9): 
         idx = (start_idx + (i * direction)) % 60
         ganji = GANJI_60[idx]
-        # 대운수(Age)는 DB 절기 시간 데이터 부재로 정확한 계산 불가 -> 임의로 10단위 표기
-        # 실전에서는 "초년, 청년, 중년" 흐름 파악용
         daewoon_list.append(f"{i*10}대운: {ganji}")
         
     return daewoon_list
 
-# === 메인 함수 ===
+# === 5. 메인 분석 함수 ===
 def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
     db_data = get_db_data(year, month, day, is_lunar)
-    if not db_data: return {"error": "DB 날짜 없음"}
+    if not db_data: return {"error": "DB 날짜 없음 (만세력 데이터 부족)"}
     
     try:
         lunar_month = int(db_data[0]) 
@@ -119,87 +131,34 @@ def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
     except: return {"error": "날짜 형변환 오류"}
         
     year_p, month_p, day_p = db_data[2], db_data[3], db_data[4]
-    
-    # 시주
     time_p, time_idx = calculate_time_pillar(day_p[0], hour)
     
-    # 자미두수
     myung_loc, myung_star = get_jami_data(lunar_month, time_idx, year_p[0], lunar_day)
-    
-    # ★대운 계산 실행
     daewoon = calculate_daewoon(gender, year_p, month_p)
     
     return {
         "입력기준": "음력" if is_lunar else "양력",
         "음력": f"{lunar_month}월 {lunar_day}일",
         "사주": [year_p, month_p, day_p, time_p],
-        "대운": daewoon, # 계산된 대운 리스트 반환
+        "대운": daewoon,
         "자미두수": {
             "명궁위치": myung_loc,
             "명궁주성": myung_star
         }
     }
-# ... (위에는 기존 사주/대운/자미두수 로직 그대로 유지) ...
 
-# === 5. 시스템 관리 함수 (로그인/저장) ===
+# =========================================================
+# ★★★ [추가된 부분] 시스템 관리 (로그인, 저장, DB생성) ★★★
+# =========================================================
 
-def login_user(username, password):
-    """로그인 검증 함수"""
-    conn = sqlite3.connect('saju.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM users WHERE username=? AND password=?", (username, password))
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result:
-        return result[0] # 상담원 이름 반환 (예: 상담원1)
-    else:
-        return None
-
-def save_consultation(counselor_id, client_name, gender, b_date, b_time, memo=""):
-    """상담 이력 저장 함수"""
-    conn = sqlite3.connect('saju.db')
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-        INSERT INTO consultations (counselor_id, client_name, client_gender, birth_date, birth_time, memo)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (counselor_id, client_name, gender, str(b_date), str(b_time), memo))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"DB 저장 오류: {e}")
-        return False
-    finally:
-        conn.close()
-
-def get_my_consultation_history(counselor_id):
-    """내 상담 이력 조회"""
-    conn = sqlite3.connect('saju.db')
-    # 결과를 딕셔너리처럼 쓰기 위해 row_factory 설정 가능하나 여기선 생략
-    cursor = conn.cursor()
-    cursor.execute("""
-    SELECT client_name, client_gender, birth_date, consult_date 
-    FROM consultations 
-    WHERE counselor_id=? 
-    ORDER BY consult_date DESC
-    LIMIT 10
-    """, (counselor_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-# ... (위의 기존 코드들은 그대로 둠) ...
-
-# === [추가] DB 자동 초기화 함수 ===
 def check_and_init_db():
     """앱 실행 시 DB와 테이블이 없으면 자동으로 생성하는 함수"""
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
     
-    # 1. users 테이블이 있는지 확인
+    # users 테이블 확인 및 생성
     cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='users'")
     if cursor.fetchone()[0] == 0:
-        # 테이블이 없으면 생성
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -207,6 +166,7 @@ def check_and_init_db():
             name TEXT
         )
         ''')
+        # consultations 테이블 생성
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS consultations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,7 +180,7 @@ def check_and_init_db():
             FOREIGN KEY (counselor_id) REFERENCES users (username)
         )
         ''')
-        # 초기 상담원 데이터(test1~5) 넣기
+        # 기본 계정 5개 생성 (test1 ~ test5 / 1234)
         users = [
             ('test1', '1234', '상담원1'),
             ('test2', '1234', '상담원2'),
@@ -230,6 +190,50 @@ def check_and_init_db():
         ]
         cursor.executemany('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', users)
         conn.commit()
-        print("DB 및 기본 계정(test1~5) 자동 생성 완료")
+        print(">> 시스템 알림: DB 테이블 및 기본 계정(test1~5)이 자동 생성되었습니다.")
         
     conn.close()
+
+def login_user(username, password):
+    """로그인 검증"""
+    conn = sqlite3.connect('saju.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM users WHERE username=? AND password=?", (username, password))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    else:
+        return None
+
+def save_consultation(counselor_id, client_name, gender, b_date, b_time, memo=""):
+    """상담 기록 저장"""
+    conn = sqlite3.connect('saju.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+        INSERT INTO consultations (counselor_id, client_name, client_gender, birth_date, birth_time, memo)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (counselor_id, client_name, gender, str(b_date), str(b_time), memo))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"저장 오류: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_my_consultation_history(counselor_id):
+    """상담 이력 조회"""
+    conn = sqlite3.connect('saju.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT client_name, client_gender, birth_date, consult_date 
+    FROM consultations 
+    WHERE counselor_id=? 
+    ORDER BY consult_date DESC
+    LIMIT 10
+    """, (counselor_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
