@@ -167,3 +167,42 @@ def get_my_consultation_history(counselor_id):
     rows = cursor.fetchall()
     conn.close()
     return rows
+# ... (위의 기존 코드들은 그대로 유지) ...
+
+# =========================================================
+# ★ [추가] 월운(이달의 운세) 분석을 위한 DB 조회 함수 ★
+# =========================================================
+def get_monthly_ganji(year, month):
+    """
+    지정된 년/월(양력)의 세운(년주)과 월운(월주)을 DB에서 가져옴.
+    AI가 임의로 계산하지 못하게 강제함.
+    """
+    import os
+    if not os.path.exists('saju.db'):
+        return None
+
+    conn = sqlite3.connect('saju.db')
+    cursor = conn.cursor()
+    
+    try:
+        # 양력 기준으로 해당 월의 데이터를 1개만 조회 (어차피 월건은 그 달에 동일함)
+        # 단, 절기가 바뀌는 날짜가 있으므로 안전하게 '15일' 기준으로 조회
+        query = f"""
+        SELECT cd_hyganjee, cd_kyganjee 
+        FROM calenda_data 
+        WHERE cd_sy={year} AND cd_sm={month} AND cd_sd=15
+        """
+        cursor.execute(query)
+        result = cursor.fetchone()
+        
+        if result:
+            year_ganji = result[0]  # 세운 (예: 甲辰)
+            month_ganji = result[1] # 월운 (예: 丙寅)
+            return {"year_ganji": year_ganji, "month_ganji": month_ganji}
+        else:
+            return None
+            
+    except Exception as e:
+        return None
+    finally:
+        conn.close()
