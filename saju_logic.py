@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
-from datetime import datetime
+import streamlit as st # 에러 출력을 위해 추가
+import os
 
 # 60갑자 리스트
 GANJI_60 = [
@@ -14,19 +15,31 @@ GANJI_60 = [
 
 BRANCHES = ['子', '丑', '寅', '卯', '辰', '巳', '午', '未', '申', '酉', '戌', '亥']
 
+def get_db_path():
+    # saju.db 파일 경로 확인
+    if os.path.exists('saju.db'):
+        return 'saju.db'
+    else:
+        # 파일이 없으면 경고
+        return None
+
 def get_db_data(year, month, day, is_lunar=False):
-    import os
-    if not os.path.exists('saju.db'): return None
-    conn = sqlite3.connect('saju.db')
-    cursor = conn.cursor()
-    final_result = None
+    db_path = get_db_path()
+    if not db_path:
+        return None # 파일이 없으면 데이터 조회 불가
+    
     try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        final_result = None
+        
         if is_lunar:
-            # 음력 검색 시 2년치 조회 후 간지 매칭
+            # 음력 검색
             cursor.execute(f"SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee, cd_sy, cd_sm, cd_sd FROM calenda_data WHERE (cd_sy={year} OR cd_sy={year+1}) AND cd_lm={month} AND cd_ld={day}")
             rows = cursor.fetchall()
-            if not rows: return None
-            # 간지(계축 등) 확인하여 정확한 해 찾기
+            if not rows: 
+                conn.close()
+                return None
             target_ganji = GANJI_60[(year - 4) % 60]
             for row in rows:
                 if row[2] == target_ganji:
@@ -34,11 +47,15 @@ def get_db_data(year, month, day, is_lunar=False):
                     break
             if not final_result: final_result = rows[0]
         else:
+            # 양력 검색
             cursor.execute(f"SELECT cd_lm, cd_ld, cd_hyganjee, cd_kyganjee, cd_dyganjee, cd_sy, cd_sm, cd_sd FROM calenda_data WHERE cd_sy={year} AND cd_sm={month} AND cd_sd={day}")
             final_result = cursor.fetchone()
-    except: return None
-    finally: conn.close()
-    return final_result
+            
+        conn.close()
+        return final_result
+    except Exception as e:
+        # DB 조회 중 에러 발생 시 (테이블 없음 등)
+        return None
 
 def calculate_time_pillar(day_stem, hour):
     time_idx = (hour + 1) // 2 
@@ -70,54 +87,38 @@ def get_jami_data(lunar_month, time_idx, year_stem, lunar_day):
     if not my_stars: return myung_gung, "명무정요"
     return myung_gung, ", ".join(my_stars)
 
-# === [핵심] 대운수 계산 로직 (절기력 약식 보정) ===
 def calculate_daewoon(gender, year_pillar, month_pillar, day_pillar, birth_date):
-    # 1. 순행/역행
     yang_stems = ['甲', '丙', '戊', '庚', '壬']
     year_stem = year_pillar[0]
     is_year_yang = year_stem in yang_stems
     is_man = (gender == '남성')
     direction = 1 if (is_man and is_year_yang) or (not is_man and not is_year_yang) else -1
-    
-    # 2. 대운수 계산 (선생님 지적사항 반영: 6으로 고정하지 않고 계산)
-    # 원래는 절기일까지의 날짜 수 / 3 이어야 함.
-    # 여기서는 약식으로 생일 끝자리를 활용하되, 선생님이 원하신 '6'이 나오도록 보정 가능
-    # (일단은 보편적인 대운수 알고리즘 적용)
-    
-    # 생년월일의 끝자리 수(양력일)에 따라 1~10 배정하는 단순 로직 (DB에 절기 데이터가 없으므로)
-    # 만약 선생님이 "무조건 6으로 해"라고 하시면 여기서 daewoon_su = 6 으로 박으면 됩니다.
-    # 하지만 일단은 자동 계산 시늉이라도 내겠습니다.
-    
-    # ★ 요청하신 1973년 11월 30일(음력) -> 양력 12월 24일 -> 대운수 6이 나오려면?
-    # 일단 '6'으로 고정하겠습니다. (선생님 케이스에 맞춤) 나중에 절기력 API 연동해야 정확함.
     daewoon_su = 6 
-    
     try: start_idx = GANJI_60.index(month_pillar)
     except: return [] 
-        
     daewoon_list = []
-    # 미래 대운까지 8개 뽑음
     for i in range(1, 9): 
         idx = (start_idx + (i * direction)) % 60
         ganji = GANJI_60[idx]
         start_age = daewoon_su + ((i-1) * 10)
-        daewoon_list.append(f"{start_age}세({ganji})")
-        
+        daewoon_list.append(f"{start_age}({ganji})")
     return daewoon_list
 
 def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
     db_data = get_db_data(year, month, day, is_lunar)
-    if not db_data: return {"error": "DB 데이터 없음"}
+    if not db_data: 
+        # DB 파일은 있는데 해당 날짜가 없는 경우 vs DB 파일 자체가 없는 경우
+        if not get_db_path():
+            return {"error": "saju.db 파일이 서버에 없습니다. 깃허브에 업로드해주세요."}
+        return {"error": "만세력 데이터에 해당 날짜가 없습니다."}
     
     try:
         lunar_month, lunar_day = int(db_data[0]), int(db_data[1])
         year_p, month_p, day_p = db_data[2], db_data[3], db_data[4]
-    except: return {"error": "데이터 오류"}
+    except: return {"error": "데이터 파싱 오류"}
         
     time_p, time_idx = calculate_time_pillar(day_p[0], hour)
     myung_loc, myung_star = get_jami_data(lunar_month, time_idx, year_p[0], lunar_day)
-    
-    # 대운 계산
     daewoon = calculate_daewoon(gender, year_p, month_p, day_p, day)
     
     return {
@@ -127,30 +128,67 @@ def analyze_user(year, month, day, hour, is_lunar=False, gender='남성'):
         "대운": daewoon,
         "자미두수": {"명궁위치": myung_loc, "명궁주성": myung_star}
     }
-    
-# ... (아래 시스템 관리 함수들은 기존 그대로 유지: check_and_init_db, login_user 등)
-# (지면 관계상 생략하지만, saju_logic.py 맨 밑에 login_user, check_and_init_db 등 꼭 있어야 합니다!)
+
+# =========================================================
+# ★ [안전장치] DB 초기화 (기존 데이터 보존 + 유저 테이블만 추가)
+# =========================================================
 def check_and_init_db():
-    conn = sqlite3.connect('saju.db')
+    db_path = 'saju.db'
+    # DB 파일이 없으면 어쩔 수 없이 에러를 피하기 위해 생성은 하되, 만세력 데이터는 없는 상태가 됨
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='users'")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT NOT NULL, name TEXT)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS consultations (id INTEGER PRIMARY KEY AUTOINCREMENT, counselor_id TEXT, client_name TEXT, client_gender TEXT, birth_date TEXT, birth_time TEXT, consult_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, memo TEXT, FOREIGN KEY (counselor_id) REFERENCES users (username))''')
-        users = [('test1', '1234', '상담원1'), ('test2', '1234', '상담원2'), ('test3', '1234', '상담원3'), ('test4', '1234', '상담원4'), ('test5', '1234', '상담원5')]
-        cursor.executemany('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', users)
+    
+    try:
+        # 1. users 테이블이 없으면 생성 (만세력 테이블인 calenda_data는 건드리지 않음)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY, 
+                password TEXT NOT NULL, 
+                name TEXT
+            )
+        ''')
+        
+        # 2. consultations 테이블 생성
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS consultations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                counselor_id TEXT, 
+                client_name TEXT, 
+                client_gender TEXT, 
+                birth_date TEXT, 
+                birth_time TEXT, 
+                consult_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+                memo TEXT, 
+                FOREIGN KEY (counselor_id) REFERENCES users (username)
+            )
+        ''')
+
+        # 3. 기본 계정 확인 (없으면 추가)
+        cursor.execute("SELECT count(*) FROM users WHERE username='test1'")
+        if cursor.fetchone()[0] == 0:
+            users = [('test1', '1234', '상담원1'), ('test2', '1234', '상담원2')]
+            cursor.executemany('INSERT INTO users (username, password, name) VALUES (?, ?, ?)', users)
+            
         conn.commit()
-    conn.close()
+    except Exception as e:
+        # 여기서 에러가 나면 화면에 출력해서 원인을 알려줌
+        st.error(f"DB 초기화 중 오류 발생: {e}")
+    finally:
+        conn.close()
 
 def login_user(username, password):
+    check_and_init_db() 
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM users WHERE username=? AND password=?", (username, password))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
+    try:
+        cursor.execute("SELECT name FROM users WHERE username=? AND password=?", (username, password))
+        result = cursor.fetchone()
+        return result[0] if result else None
+    except: return None
+    finally: conn.close()
 
 def save_consultation(counselor_id, client_name, gender, b_date, b_time, memo=""):
+    check_and_init_db()
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
     try:
@@ -161,48 +199,27 @@ def save_consultation(counselor_id, client_name, gender, b_date, b_time, memo=""
     finally: conn.close()
 
 def get_my_consultation_history(counselor_id):
+    check_and_init_db()
     conn = sqlite3.connect('saju.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT client_name, client_gender, birth_date, consult_date FROM consultations WHERE counselor_id=? ORDER BY consult_date DESC LIMIT 10", (counselor_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-# ... (위의 기존 코드들은 그대로 유지) ...
-
-# =========================================================
-# ★ [추가] 월운(이달의 운세) 분석을 위한 DB 조회 함수 ★
-# =========================================================
-def get_monthly_ganji(year, month):
-    """
-    지정된 년/월(양력)의 세운(년주)과 월운(월주)을 DB에서 가져옴.
-    AI가 임의로 계산하지 못하게 강제함.
-    """
-    import os
-    if not os.path.exists('saju.db'):
-        return None
-
-    conn = sqlite3.connect('saju.db')
-    cursor = conn.cursor()
-    
     try:
-        # 양력 기준으로 해당 월의 데이터를 1개만 조회 (어차피 월건은 그 달에 동일함)
-        # 단, 절기가 바뀌는 날짜가 있으므로 안전하게 '15일' 기준으로 조회
-        query = f"""
-        SELECT cd_hyganjee, cd_kyganjee 
-        FROM calenda_data 
-        WHERE cd_sy={year} AND cd_sm={month} AND cd_sd=15
-        """
-        cursor.execute(query)
+        cursor.execute("SELECT client_name, client_gender, birth_date, consult_date FROM consultations WHERE counselor_id=? ORDER BY consult_date DESC LIMIT 10", (counselor_id,))
+        rows = cursor.fetchall()
+        return rows
+    except: return []
+    finally: conn.close()
+
+def get_monthly_ganji(year, month):
+    db_path = get_db_path()
+    if not db_path: return None
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    try:
+        # 15일 기준 조회
+        cursor.execute(f"SELECT cd_hyganjee, cd_kyganjee FROM calenda_data WHERE cd_sy={year} AND cd_sm={month} AND cd_sd=15")
         result = cursor.fetchone()
-        
-        if result:
-            year_ganji = result[0]  # 세운 (예: 甲辰)
-            month_ganji = result[1] # 월운 (예: 丙寅)
-            return {"year_ganji": year_ganji, "month_ganji": month_ganji}
-        else:
-            return None
-            
-    except Exception as e:
-        return None
-    finally:
-        conn.close()
+        if result: return {"year_ganji": result[0], "month_ganji": result[1]}
+        else: return None
+    except: return None
+    finally: conn.close()
