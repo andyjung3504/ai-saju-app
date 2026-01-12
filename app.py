@@ -244,7 +244,8 @@ else:
         is_lunar = (calendar_type == "음력")
         
         c1, c2 = st.columns(2)
-        with c1: birth_date = st.date_input("생년월일", value=pd.to_datetime("1980-01-01"), min_value=pd.to_datetime("1900-01-01"))
+        # [수정] 2026년까지 입력 가능하도록 max_value 추가
+        with c1: birth_date = st.date_input("생년월일", value=pd.to_datetime("1980-01-01"), min_value=pd.to_datetime("1900-01-01"), max_value=pd.to_datetime("2026-12-31"))
         with c2: birth_time = st.time_input("태어난 시간", value=pd.to_datetime("14:30").time())
         
         st.divider()
